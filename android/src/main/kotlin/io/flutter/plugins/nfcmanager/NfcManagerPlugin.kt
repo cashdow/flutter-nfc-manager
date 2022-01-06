@@ -1,6 +1,8 @@
 package io.flutter.plugins.nfcmanager
 
 import android.app.Activity
+import android.app.PendingIntent
+import android.content.Intent
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
@@ -14,6 +16,9 @@ import android.nfc.tech.NfcF
 import android.nfc.tech.NfcV
 import android.nfc.tech.TagTechnology
 import android.os.Build
+import android.os.Bundle
+import android.util.Log
+
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -22,34 +27,57 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import io.flutter.plugin.common.PluginRegistry
 import java.io.IOException
 import java.lang.Exception
 import java.util.*
 
-class NfcManagerPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
+class NfcManagerPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
+        ,
+        PluginRegistry.NewIntentListener
+{
   private lateinit var channel : MethodChannel
   private lateinit var activity: Activity
   private lateinit var tags: MutableMap<String, Tag>
+  private lateinit var apBinding: ActivityPluginBinding
   private var adapter: NfcAdapter? = null
   private var connectedTech: TagTechnology? = null
+
 
   override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
     channel = MethodChannel(binding.binaryMessenger, "plugins.flutter.io/nfc_manager")
     channel.setMethodCallHandler(this)
     adapter = NfcAdapter.getDefaultAdapter(binding.applicationContext)
     tags = mutableMapOf()
+
   }
 
   override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
     channel.setMethodCallHandler(null)
+
   }
 
   override fun onAttachedToActivity(binding: ActivityPluginBinding) {
     activity = binding.activity
+    apBinding = binding
+    binding.addOnNewIntentListener(this)
+  }
+
+
+  override fun onNewIntent(intent: Intent?): Boolean {
+    val tagFromIntent: Tag? = intent?.getParcelableExtra(NfcAdapter.EXTRA_TAG)
+    if (tagFromIntent != null) {
+      val handle = UUID.randomUUID().toString()
+      tags[handle] = tagFromIntent
+      activity.runOnUiThread { channel.invokeMethod("onDiscovered", getTagMap(tagFromIntent).toMutableMap().apply { put("handle", handle) }) }
+    }
+
+    return false
   }
 
   override fun onDetachedFromActivity() {
     // no op
+    apBinding.removeOnNewIntentListener(this)
   }
 
   override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
@@ -104,11 +132,18 @@ class NfcManagerPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
         result.error("unavailable", "NFC is not available for device.", null)
         return
       }
-      adapter.enableReaderMode(activity, {
-        val handle = UUID.randomUUID().toString()
-        tags[handle] = it
-        activity.runOnUiThread { channel.invokeMethod("onDiscovered", getTagMap(it).toMutableMap().apply { put("handle", handle) }) }
-      }, getFlags(call.argument<List<String>>("pollingOptions")!!), null)
+      val pendingIntent = PendingIntent.getActivity(
+              activity.applicationContext, 0, activity.intent, 0
+      )
+      adapter.disableForegroundDispatch(activity);
+      adapter.enableForegroundDispatch(activity, pendingIntent, null, null)
+
+      //    adapter.enableReaderMode(activity, {
+      //      val handle = UUID.randomUUID().toString()
+      //      tags[handle] = it
+      //      activity.runOnUiThread { channel.invokeMethod("onDiscovered", getTagMap(it).toMutableMap().apply { put("handle", handle) }) }
+      //    }, getFlags(call.argument<List<String>>("pollingOptions")!!), options)
+
       result.success(null)
     }
   }
@@ -121,7 +156,8 @@ class NfcManagerPlugin: FlutterPlugin, MethodCallHandler, ActivityAware {
         result.error("unavailable", "NFC is not available for device.", null)
         return
       }
-      adapter.disableReaderMode(activity)
+      // adapter.disableReaderMode(activity)
+      adapter.disableForegroundDispatch(activity);
       result.success(null)
     }
   }
